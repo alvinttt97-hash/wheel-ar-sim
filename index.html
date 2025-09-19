@@ -13,14 +13,18 @@
     }
     html, body { height: 100%; margin: 0; background: #000; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: var(--text); }
     #app { position: fixed; inset: 0; overflow: hidden; }
-    /* Camera video */
-    #camera { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; transform: scaleX(var(--mirror, 1)); }
 
-    /* Wheel overlay container */
+    /* Camera video layer */
+    #camera { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; transform: scaleX(var(--mirror, 1)); z-index: 0; }
+
+    /* Guides */
+    #aim { position: absolute; left: 50%; top: 50%; width: 180px; height: 180px; transform: translate(-50%, -50%); pointer-events: none; opacity: .22; filter: drop-shadow(0 1px 1px rgba(0,0,0,.8)); z-index: 1; }
+
+    /* Wheel overlay */
     #overlay { position: absolute; inset: 0; touch-action: none; z-index: 2; }
     #wheel { position: absolute; left: 50%; top: 50%; transform-origin: 50% 50%; will-change: transform; pointer-events: auto; display: block; background: transparent !important; mix-blend-mode: normal; }
 
-    /* Safe UI area */
+    /* HUD */
     .hud { position: absolute; left: 0; right: 0; display: flex; gap: .5rem; padding: .5rem .75rem; backdrop-filter: blur(var(--ui-blur)); background: var(--ui-bg); z-index: 3; }
     #topbar { top: 0; align-items: center; justify-content: space-between; }
     #bottombar { bottom: 0; flex-wrap: wrap; align-items: center; justify-content: center; }
@@ -31,13 +35,10 @@
     input[type=range] { width: 160px; }
     label { font-size: .85rem; opacity: .9; }
 
-    /* Crosshair guide */
-    #aim { position: absolute; left: 50%; top: 50%; width: 180px; height: 180px; transform: translate(-50%, -50%); pointer-events: none; opacity: .22; filter: drop-shadow(0 1px 1px rgba(0,0,0,.8)); z-index: 1; }
-
     /* Toast */
     #toast { position: absolute; left: 50%; bottom: 80px; transform: translateX(-50%); background: rgba(0,0,0,.7); padding: .6rem .8rem; border-radius: 10px; font-size: .9rem; display: none; z-index: 4; }
 
-    /* iOS file input hint */
+    /* File label */
     .filelbl { border: 1px dashed #666; border-radius: 10px; padding: .35rem .6rem; cursor: pointer; }
 
     /* Small screens */
@@ -51,7 +52,7 @@
   <div id="app">
     <video id="camera" autoplay playsinline muted></video>
 
-    <!-- Optional crosshair ring to help align wheel center to hub -->
+    <!-- Crosshair ring to align wheel hub -->
     <svg id="aim" viewBox="0 0 200 200" aria-hidden="true">
       <circle cx="100" cy="100" r="95" fill="none" stroke="#fff" stroke-width="2" stroke-dasharray="5 6"/>
       <circle cx="100" cy="100" r="4" fill="#fff"/>
@@ -70,6 +71,7 @@
         <button id="flipBtn" title="Switch camera">Flip</button>
         <button id="snapBtn" title="Save photo">Snapshot</button>
         <button id="resetBtn" title="Reset transform">Reset</button>
+        <button id="hideUiBtn" title="Hide all controls for a clean capture (H)">Hide UI</button>
       </div>
       <div style="display:flex; gap:.5rem; align-items:center;">
         <input id="file" type="file" accept="image/*" hidden />
@@ -91,18 +93,18 @@
     <div id="toast" role="status" aria-live="polite"></div>
   </div>
 
+  <!-- Offscreen canvas for snapshots -->
   <canvas id="capture" width="1080" height="1920" style="display:none"></canvas>
 
   <script>
     // ===== DOM refs
     const video = document.getElementById('camera');
-    const overlay = document.getElementById('overlay');
     const wheel = document.getElementById('wheel');
-
     const startBtn = document.getElementById('startBtn');
     const flipBtn = document.getElementById('flipBtn');
     const snapBtn = document.getElementById('snapBtn');
     const resetBtn = document.getElementById('resetBtn');
+    const hideUiBtn = document.getElementById('hideUiBtn');
     const fileInput = document.getElementById('file');
     const sampleBtn = document.getElementById('sampleBtn');
 
@@ -121,7 +123,7 @@
 
     // Wheel transform state
     let pos = { x: 0, y: 0 }; // offset from center (px)
-    let scale = 0.7; // 0-2
+    let scale = 0.7; // extra pinch scaling (0.2-2)
     let angle = 0; // deg
 
     function updateWheelTransform() {
@@ -144,17 +146,50 @@
     opacity.addEventListener('input', updateWheelTransform);
     rotate.addEventListener('input', updateWheelTransform);
     lockCenter.addEventListener('change', updateWheelTransform);
+
     mirrorChk.addEventListener('change', () => {
       document.documentElement.style.setProperty('--mirror', mirrorChk.checked ? -1 : 1);
       showToast(mirrorChk.checked ? 'Mirrored' : 'Mirror off');
     });
+
     ringGuideChk.addEventListener('change', () => aim.style.display = ringGuideChk.checked ? 'block' : 'none');
+
+    // ===== HUD hide/show
+    let hudHidden = false;
+    function setHUD(hidden) {
+      hudHidden = hidden;
+      document.getElementById('topbar').style.display = hidden ? 'none' : 'flex';
+      document.getElementById('bottombar').style.display = hidden ? 'none' : 'flex';
+      aim.style.display = hidden ? 'none' : (ringGuideChk.checked ? 'block' : 'none');
+      hideUiBtn.textContent = hidden ? 'Show UI' : 'Hide UI';
+      showToast(hidden ? 'UI hidden (tap Show UI or press H)' : 'UI shown');
+    }
+    hideUiBtn.addEventListener('click', () => setHUD(!hudHidden));
+    window.addEventListener('keydown', (e) => { if (e.key && e.key.toLowerCase() === 'h') setHUD(!hudHidden); });
+
+    // ===== Camera helpers
+    function isSecureContextOK(){
+      return location.protocol === 'https:' || location.hostname === 'localhost';
+    }
+    async function canUseCamera(){
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        return devices.some(d => d.kind === 'videoinput');
+      } catch { return false; }
+    }
 
     async function startCamera() {
       try {
-        if (currentStream) {
-          currentStream.getTracks().forEach(t => t.stop());
+        if (!isSecureContextOK()) {
+          alert('Camera requires HTTPS (or localhost). Please host over HTTPS.');
+          return;
         }
+        if (!(await canUseCamera())) {
+          alert('No camera found or permission blocked. On iPhone: Settings → Safari → Camera → Allow.');
+          return;
+        }
+        if (currentStream) currentStream.getTracks().forEach(t => t.stop());
         const constraints = {
           audio: false,
           video: {
@@ -169,18 +204,22 @@
         showToast('Camera started');
       } catch (err) {
         console.error(err);
-        alert('Unable to access camera. Make sure you granted permission and are using HTTPS.');
+        if (err && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError')) {
+          alert('Requested camera not found. Try Flip, or enable camera in Settings.');
+        } else if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) {
+          alert('Camera permission denied. On iPhone: Settings → Safari → Camera → Allow.');
+        } else {
+          alert('Unable to access camera. Use HTTPS and allow permission.');
+        }
       }
     }
 
-    function stopCamera() {
-      if (currentStream) currentStream.getTracks().forEach(t => t.stop());
-    }
+    function stopCamera() { if (currentStream) currentStream.getTracks().forEach(t => t.stop()); }
 
     startBtn.addEventListener('click', startCamera);
     flipBtn.addEventListener('click', async () => { useBack = !useBack; await startCamera(); });
 
-    // Load sample transparent PNG (data URI embedded for offline/demo)
+    // ===== Sample wheel (transparent PNG data URI)
     const SAMPLE_WHEEL =
       'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAoAAAACgCAYAAAB6m3qTAAABbklEQVR4nO3RMQEAIAwEsdP+v2Qp9g0wC8mKk5kH1mL8vQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHwEwDgY9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AABg9k0AAJ4BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwK3r1HAAEwE0GxAAAAAElFTkSuQmCC';
 
@@ -191,15 +230,14 @@
       showToast('Sample wheel loaded');
     });
 
-    // Use DataURL loader (more compatible on iOS than blob URLs in some contexts)
+    // ===== File upload: use DataURL for iOS compatibility
     fileInput.addEventListener('change', (e) => {
       const f = e.target.files && e.target.files[0];
       if (!f) { showToast('No file selected'); return; }
       const type = (f.type || '').toLowerCase();
       const name = (f.name || '').toLowerCase();
-
       if (name.endsWith('.heic') || name.endsWith('.heif') || type.includes('heic') || type.includes('heif')) {
-        alert('HEIC/HEIF images from iPhone are not supported by browsers directly. Please export as PNG/JPG or set Camera → Formats → Most Compatible.');
+        alert('HEIC/HEIF are not supported by browsers directly. Please export as PNG/JPG or set iPhone Camera → Formats → Most Compatible.');
         return;
       }
       if (type && !type.startsWith('image/')) {
@@ -217,45 +255,28 @@
       reader.readAsDataURL(f);
     });
 
-    // Pointer/touch gestures (drag, pinch-to-zoom, rotate)
+    // ===== Gestures (drag, pinch, rotate)
     const active = new Map(); // pointerId -> {x,y}
-
-    function onPointerDown(e) {
-      try { wheel.setPointerCapture(e.pointerId); } catch(_) {}
-      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    }
+    function onPointerDown(e) { try { wheel.setPointerCapture(e.pointerId); } catch(_) {} active.set(e.pointerId, { x: e.clientX, y: e.clientY }); }
     function onPointerMove(e) {
       if (!active.has(e.pointerId)) return;
       const prev = active.get(e.pointerId);
       active.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
       if (active.size === 1) {
-        // drag
-        if (!lockCenter.checked) {
-          pos.x += e.clientX - prev.x;
-          pos.y += e.clientY - prev.y;
-          updateWheelTransform();
-        }
+        if (!lockCenter.checked) { pos.x += e.clientX - prev.x; pos.y += e.clientY - prev.y; updateWheelTransform(); }
       } else if (active.size >= 2) {
-        // pinch/rotate using first two pointers
         const ids = [...active.keys()].slice(0,2);
         const p0 = active.get(ids[0]);
         const p1 = active.get(ids[1]);
-        const p0Prev = ids[0] === e.pointerId ? prev : p0; // approx
-        const p1Prev = p1; // rough
+        const p0Prev = ids[0] === e.pointerId ? prev : p0;
+        const p1Prev = p1;
         const dist = (a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
         const ang = (a,b)=>Math.atan2(b.y-a.y, b.x-a.x);
-
-        const dNow = dist(p0, p1);
-        const dPrev = dist(p0Prev, p1Prev);
-        if (dPrev > 0) {
-          const factor = dNow / dPrev;
-          scale = Math.min(2, Math.max(0.2, scale * factor));
-        }
-        const aNow = ang(p0, p1);
-        const aPrev = ang(p0Prev, p1Prev);
+        const dNow = dist(p0,p1), dPrev = dist(p0Prev,p1Prev);
+        if (dPrev > 0) scale = Math.min(2, Math.max(0.2, scale * (dNow/dPrev)));
+        const aNow = ang(p0,p1), aPrev = ang(p0Prev,p1Prev);
         const deltaDeg = (aNow - aPrev) * 180 / Math.PI;
-        rotate.value = ( (Number(rotate.value) + deltaDeg) % 360 + 360 ) % 360;
+        rotate.value = (((Number(rotate.value) + deltaDeg) % 360) + 360) % 360;
         updateWheelTransform();
       }
     }
@@ -266,27 +287,19 @@
     wheel.addEventListener('pointerup', onPointerUp);
     wheel.addEventListener('pointercancel', onPointerUp);
 
-    // Snapshot (composite camera + wheel into a PNG)
+    // ===== Snapshot (composite camera + wheel)
     snapBtn.addEventListener('click', async () => {
       if (!video.videoWidth) return alert('Camera not ready.');
       const cw = capture.width, ch = capture.height;
       const ctx = capture.getContext('2d');
       ctx.clearRect(0,0,cw,ch);
-
       const vW = video.videoWidth, vH = video.videoHeight;
-      const canvasAR = cw / ch;
-      const videoAR = vW / vH;
+      const canvasAR = cw / ch, videoAR = vW / vH;
       let sx, sy, sw, sh;
-      if (videoAR > canvasAR) {
-        sh = vH; sw = vH * canvasAR; sx = (vW - sw)/2; sy = 0;
-      } else {
-        sw = vW; sh = vW / canvasAR; sx = 0; sy = (vH - sh)/2;
-      }
-      ctx.save();
-      if (mirrorChk.checked) { ctx.translate(cw, 0); ctx.scale(-1, 1); }
-      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
-      ctx.restore();
-
+      if (videoAR > canvasAR) { sh = vH; sw = vH * canvasAR; sx = (vW - sw)/2; sy = 0; }
+      else { sw = vW; sh = vW / canvasAR; sx = 0; sy = (vH - sh)/2; }
+      ctx.save(); if (mirrorChk.checked) { ctx.translate(cw, 0); ctx.scale(-1, 1); }
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch); ctx.restore();
       const w = window.innerWidth, h = window.innerHeight;
       const minDim = Math.min(w, h);
       const dim = minDim * (Number(size.value)/100) * scale;
@@ -294,42 +307,28 @@
       const cy = ch/2 + (lockCenter.checked ? 0 : pos.y * (ch/h));
       const img = wheel;
       if (img && img.complete && img.naturalWidth) {
-        ctx.save();
-        ctx.globalAlpha = Number(opacity.value)/100;
-        ctx.translate(cx, cy);
-        ctx.rotate(Number(rotate.value) * Math.PI/180);
-        ctx.drawImage(img, -dim/2, -dim/2, dim, dim);
-        ctx.restore();
+        ctx.save(); ctx.globalAlpha = Number(opacity.value)/100; ctx.translate(cx, cy); ctx.rotate(Number(rotate.value) * Math.PI/180); ctx.drawImage(img, -dim/2, -dim/2, dim, dim); ctx.restore();
       }
-
       const data = capture.toDataURL('image/png');
-      const a = document.createElement('a');
-      a.href = data; a.download = `wheel-sim-${Date.now()}.png`; a.click();
+      const a = document.createElement('a'); a.href = data; a.download = `wheel-sim-${Date.now()}.png`; a.click();
       showToast('Snapshot saved');
     });
 
+    // ===== Reset
     resetBtn.addEventListener('click', () => {
       pos = { x: 0, y: 0 }; scale = 0.7; rotate.value = 0; size.value = 70; opacity.value = 100; wheel.style.visibility = 'hidden'; updateWheelTransform(); showToast('Reset');
+      if (hudHidden) setHUD(false);
     });
 
-    function showToast(msg) {
-      toast.textContent = msg; toast.style.display = 'block';
-      clearTimeout(showToast._t);
-      showToast._t = setTimeout(()=> toast.style.display='none', 1500);
-    }
+    // ===== Toast
+    function showToast(msg) { toast.textContent = msg; toast.style.display = 'block'; clearTimeout(showToast._t); showToast._t = setTimeout(()=> toast.style.display='none', 1500); }
 
-    // Initial state: hide until a real image is set so we don't see a broken icon
-    wheel.style.pointerEvents = 'auto';
-    wheel.style.userSelect = 'none';
+    // ===== Initial state
     const EMPTY_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAAAACw='; // 1x1 transparent
-    wheel.src = EMPTY_PIXEL;
-    wheel.style.visibility = 'hidden';
-    updateWheelTransform();
-
-    // Resize handling keeps overlay proportionate
+    wheel.src = EMPTY_PIXEL; wheel.style.visibility = 'hidden'; updateWheelTransform();
     window.addEventListener('resize', updateWheelTransform);
 
-    // ===== Self tests
+    // ===== Self tests (do not remove; add new tests below as needed)
     (function selfTest(){
       try {
         console.group('AR Wheel Overlay — Self Test');
@@ -337,16 +336,21 @@
         console.assert(wheel instanceof HTMLImageElement, 'wheel image exists');
         const before = wheel.style.transform; rotate.value = 15; updateWheelTransform();
         console.assert(wheel.style.transform !== before, 'transform updates when controls change');
-        const img = new Image();
-        img.onload = () => console.assert(img.naturalWidth > 0, 'sample wheel data URI loads');
-        img.src = SAMPLE_WHEEL;
+        const img = new Image(); img.onload = () => console.assert(img.naturalWidth > 0, 'sample wheel data URI loads'); img.src = SAMPLE_WHEEL;
+        // HUD toggle tests
+        setHUD(true); console.assert(document.getElementById('topbar').style.display === 'none', 'HUD hides');
+        setHUD(false); console.assert(document.getElementById('topbar').style.display !== 'none', 'HUD shows');
+        // Camera capability preflight (non-fatal)
+        if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+          navigator.mediaDevices.enumerateDevices().then(list => {
+            console.assert(Array.isArray(list), 'enumerateDevices returns an array');
+          }).catch(()=>{});
+        }
         console.groupEnd();
       } catch (e) { console.error('Self test failed', e); }
     })();
 
-    // iOS hint: require a user gesture to start camera; Start button provided
-    // HTTPS is required on mobile browsers for getUserMedia.
+    // Notes: iOS requires HTTPS and a user gesture (Start Camera) for getUserMedia.
   </script>
 </body>
 </html>
-
