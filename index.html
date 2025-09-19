@@ -18,7 +18,7 @@
 
     /* Wheel overlay container */
     #overlay { position: absolute; inset: 0; touch-action: none; z-index: 2; }
-    #wheel { position: absolute; left: 50%; top: 50%; transform-origin: 50% 50%; will-change: transform; pointer-events: auto; display: block; }
+    #wheel { position: absolute; left: 50%; top: 50%; transform-origin: 50% 50%; will-change: transform; pointer-events: auto; display: block; background: transparent !important; mix-blend-mode: normal; }
 
     /* Safe UI area */
     .hud { position: absolute; left: 0; right: 0; display: flex; gap: .5rem; padding: .5rem .75rem; backdrop-filter: blur(var(--ui-blur)); background: var(--ui-bg); z-index: 3; }
@@ -349,3 +349,4 @@
   </script>
 </body>
 </html>
+
